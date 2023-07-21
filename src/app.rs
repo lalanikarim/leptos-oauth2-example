@@ -123,9 +123,9 @@ fn HomePage(cx: Scope) -> impl IntoView {
 }
 
 #[server(TokenRequest, "/api")]
-pub async fn token_request(cx: Scope, code: String) -> Result<String, ServerFnError> {
+pub async fn token_request(cx: Scope, code: String) -> Result<Option<String>, ServerFnError> {
     use oauth2::reqwest::async_http_client;
-    use oauth2::AuthType;
+    use oauth2::{AuthType, TokenResponse};
     use oauth2::{AuthorizationCode, PkceCodeVerifier};
 
     let verifier =
@@ -136,6 +136,7 @@ pub async fn token_request(cx: Scope, code: String) -> Result<String, ServerFnEr
         .map_err(|e| ServerFnError::ServerError(e.to_string()))?;
     let client = get_client()?;
     log!("Logging in using {}", code);
+
     match client
         .set_auth_type(AuthType::RequestBody)
         .exchange_code(AuthorizationCode::new(code))
@@ -143,17 +144,35 @@ pub async fn token_request(cx: Scope, code: String) -> Result<String, ServerFnEr
         .request_async(async_http_client)
         .await
     {
-        Err(e) => error!("TokenResponse Error: {:#?}", e),
-        Ok(token_result) => log!("Token Response: {:#?}", token_result),
-    };
-    Ok("working".into())
+        Err(e) => {
+            error!("TokenResponse Error: {:#?}", e);
+            Ok(None)
+        }
+        Ok(token_result) => {
+            log!("Token Response: {:#?}", token_result);
+            let access_token = token_result.access_token().to_owned();
+            log!("Access Token: {:#?}", access_token.secret());
+            Ok(Some(access_token.secret().to_owned()))
+        }
+    }
 }
 
 #[component]
 fn AuthCallback(cx: Scope) -> impl IntoView {
     let query = move || use_query_map(cx).get();
     let code = query().get("code").unwrap().to_owned();
-    let token_request_action = create_server_action::<TokenRequest>(cx);
-    token_request_action.dispatch(TokenRequest { code });
-    view! { cx, <h1>"Auth Callback"</h1> }
+    let token_resource =
+        create_blocking_resource(cx, || (), move |_| token_request(cx, code.clone()));
+    view! { cx, <h1>"Auth Callback"</h1>
+        <Suspense fallback=||() >
+        {move || token_resource.with(cx,|token| {
+            let Ok(Some(token)) = token else {
+                return view!{cx,<div>"Nothing"</div>}.into_view(cx);
+            };
+            view!{cx,
+                <div>"Token: "{token}</div>
+            }.into_view(cx)
+        })}
+        </Suspense>
+    }
 }
