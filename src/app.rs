@@ -43,12 +43,8 @@ pub fn to_server_fn_error(error: error::Error) -> ServerFnError {
 
 #[cfg(feature = "ssr")]
 pub fn get_client() -> Result<oauth2::basic::BasicClient, ServerFnError> {
-    //use dotenvy_macro::dotenv;
-
     use oauth2::basic::BasicClient;
-    use oauth2::{
-        AuthUrl, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, RedirectUrl, Scope, TokenUrl,
-    };
+    use oauth2::{AuthUrl, ClientId, ClientSecret, RedirectUrl, TokenUrl};
 
     let client = BasicClient::new(
         ClientId::new(dotenvy::var("OAUTH2_CLIENT_ID").unwrap()),
@@ -68,39 +64,52 @@ pub fn get_client() -> Result<oauth2::basic::BasicClient, ServerFnError> {
 
 #[server(GetOAuth2Url, "/api")]
 pub async fn get_oauth2_url(cx: Scope) -> Result<String, ServerFnError> {
-    //use dotenvy_macro::dotenv;
-    use oauth2::PkceCodeChallenge;
     use oauth2::{CsrfToken, Scope};
-    let (pkce_challenge, pkce_verifier) = PkceCodeChallenge::new_random_sha256();
     let scopes = dotenvy::var("OAUTH2_SCOPES").unwrap();
 
     let client = get_client()?;
     let (auth_url, _csrf_token) = client
         .authorize_url(CsrfToken::new_random)
         .add_scopes(scopes.split(" ").map(|scope| Scope::new(scope.into())))
-        //.add_scope(Scope::new("profile".into()))
-        //.add_scope(Scope::new("openid".into()))
-        //.set_pkce_challenge(pkce_challenge)
         .url();
 
-    _ = pkce_verifier
-        .ser()
-        .map(|verifier| std::fs::write("verifier.txt", verifier))
-        .map_err(|e| ServerFnError::ServerError(e.to_string()))?;
     Ok(auth_url.to_string())
 }
 
+#[server(TokenRequest, "/api")]
+pub async fn token_request(cx: Scope, code: String) -> Result<Option<String>, ServerFnError> {
+    use oauth2::reqwest::async_http_client;
+    use oauth2::AuthorizationCode;
+    use oauth2::{AuthType, TokenResponse};
+
+    let client = get_client()?;
+    log!("Logging in using {}", code);
+
+    match client
+        .set_auth_type(AuthType::RequestBody)
+        .exchange_code(AuthorizationCode::new(code))
+        .request_async(async_http_client)
+        .await
+    {
+        Err(e) => {
+            error!("TokenResponse Error: {:#?}", e);
+            Ok(None)
+        }
+        Ok(token_result) => {
+            log!("Token Response: {:#?}", token_result);
+            let access_token = token_result.access_token().to_owned();
+            log!("Access Token: {:#?}", access_token.secret());
+            Ok(Some(access_token.secret().to_owned()))
+        }
+    }
+}
 /// Renders the home page of your application.
 #[component]
 fn HomePage(cx: Scope) -> impl IntoView {
-    // Creates a reactive value to update the button
-    let (count, set_count) = create_signal(cx, 0);
-    let on_click = move |_| set_count.update(|count| *count += 1);
     let auth_url_resource = create_resource(cx, || (), move |_| get_oauth2_url(cx));
 
     view! { cx,
         <h1>"Welcome to Leptos!"</h1>
-        <button on:click=on_click>"Click Me: " {count}</button>
         <Suspense fallback=move || {
             view! { cx, <div>"Loading..."</div> }
         }>
@@ -119,41 +128,6 @@ fn HomePage(cx: Scope) -> impl IntoView {
                 }
             }}
         </Suspense>
-    }
-}
-
-#[server(TokenRequest, "/api")]
-pub async fn token_request(cx: Scope, code: String) -> Result<Option<String>, ServerFnError> {
-    use oauth2::reqwest::async_http_client;
-    use oauth2::{AuthType, TokenResponse};
-    use oauth2::{AuthorizationCode, PkceCodeVerifier};
-
-    let verifier =
-        std::fs::read_to_string("verifier.txt").map_err(|e| to_server_fn_error(e.into()))?;
-    //let verifier = verifier.replace("\"", "");
-    log!("Verifier: {}", verifier);
-    let verifier = PkceCodeVerifier::de(verifier.as_str())
-        .map_err(|e| ServerFnError::ServerError(e.to_string()))?;
-    let client = get_client()?;
-    log!("Logging in using {}", code);
-
-    match client
-        .set_auth_type(AuthType::RequestBody)
-        .exchange_code(AuthorizationCode::new(code))
-        //.set_pkce_verifier(verifier)
-        .request_async(async_http_client)
-        .await
-    {
-        Err(e) => {
-            error!("TokenResponse Error: {:#?}", e);
-            Ok(None)
-        }
-        Ok(token_result) => {
-            log!("Token Response: {:#?}", token_result);
-            let access_token = token_result.access_token().to_owned();
-            log!("Access Token: {:#?}", access_token.secret());
-            Ok(Some(access_token.secret().to_owned()))
-        }
     }
 }
 
